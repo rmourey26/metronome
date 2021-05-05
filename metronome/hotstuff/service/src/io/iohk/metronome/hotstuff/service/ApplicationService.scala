@@ -14,6 +14,9 @@ trait ApplicationService[F[_], A <: Agreement] {
   // TODO (PM-3132, PM-3133): Block validation.
   def validateBlock(block: A#Block): F[Boolean]
 
+  // TODO (PM-3108, PM-3107, PM-3137, PM-3110): Tell the application to execute a block.
+  def executeBlock(block: A#Block): F[Unit]
+
   // TODO (PM-3135): Tell the application to sync any state of the block, i.e. the Ledger.
   // The `sources` are peers who most probably have this state.
   // The full `block` is given because it may not be persisted yet.
