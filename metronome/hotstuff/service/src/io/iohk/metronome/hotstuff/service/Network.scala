@@ -1,8 +1,10 @@
 package io.iohk.metronome.hotstuff.service
 
+import cats.implicits._
 import cats.effect.{Sync, Resource, Concurrent, ContextShift}
 import io.iohk.metronome.hotstuff.consensus.basic.Agreement
 import io.iohk.metronome.networking.ConnectionHandler.MessageReceived
+import io.iohk.metronome.networking.RemoteConnectionManager
 import monix.tail.Iterant
 import monix.catnap.ConcurrentQueue
 
@@ -17,6 +19,16 @@ trait Network[F[_], A <: Agreement, M] {
 }
 
 object Network {
+
+  def fromRemoteConnnectionManager[F[_]: Sync, A <: Agreement, M](
+      manager: RemoteConnectionManager[F, A#PKey, M]
+  ): Network[F, A, M] = new Network[F, A, M] {
+    override def incomingMessages =
+      manager.incomingMessages
+
+    override def sendMessage(recipient: A#PKey, message: M) =
+      manager.sendMessage(recipient, message).rethrow
+  }
 
   /** Consume messges from a network and dispatch them either left or right,
     * based on a splitter function. Combine messages the other way.
