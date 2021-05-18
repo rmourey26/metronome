@@ -96,12 +96,11 @@ class ConsensusService[F[
           protocolError(ProtocolError.UnsafeExtension[A](sender, message))
             .as(none)
 
-        case Right(valid) if valid.message.viewNumber < state.viewNumber =>
+        case Right(valid) if isFromPast(valid, state.viewNumber) =>
           tracers.fromPast(valid) >>
             counterRef.update(_.incPast).as(none)
 
-        case Right(valid)
-            if valid.message.viewNumber > state.viewNumber + maxEarlyViewNumberDiff =>
+        case Right(valid) if isFromFuture(valid, state.viewNumber) =>
           tracers.fromFuture(valid) >>
             counterRef.update(_.incFuture).as(none)
 
@@ -111,6 +110,21 @@ class ConsensusService[F[
           counterRef.update(_.incPresent).as(validated(valid).some)
       }
     }
+
+  private def isFromPast(
+      e: Event.MessageReceived[A],
+      viewNumber: ViewNumber
+  ): Boolean =
+    e.message match {
+      case m: Message.NewView[_] => m.viewNumber < viewNumber.prev
+      case m                     => m.viewNumber < viewNumber
+    }
+
+  private def isFromFuture(
+      e: Event.MessageReceived[A],
+      viewNumber: ViewNumber
+  ): Boolean =
+    e.message.viewNumber > viewNumber + maxEarlyViewNumberDiff
 
   /** Synchronize any missing block dependencies, then enqueue the event for final processing. */
   private def syncDependencies(
