@@ -27,7 +27,9 @@ object Network {
       manager.incomingMessages
 
     override def sendMessage(recipient: A#PKey, message: M) =
-      manager.sendMessage(recipient, message).rethrow
+      // Not returning an error if we are trying to send to someone no longer connected,
+      // this should be handled transparently, delivery is best-effort.
+      manager.sendMessage(recipient, message).void
   }
 
   /** Consume messges from a network and dispatch them either left or right,
