@@ -32,6 +32,7 @@ import scala.annotation.tailrec
 import scala.collection.immutable.Queue
 import scala.util.control.NonFatal
 import io.iohk.metronome.hotstuff.service.execution.BlockExecutor
+import scala.concurrent.duration.FiniteDuration
 
 /** An effectful executor wrapping the pure HotStuff ProtocolState.
   *
@@ -52,7 +53,8 @@ class ConsensusService[F[
     syncPipe: SyncPipe[F, A]#Left,
     eventQueue: ConcurrentQueue[F, Event[A]],
     fiberSet: FiberSet[F],
-    maxEarlyViewNumberDiff: Int
+    maxEarlyViewNumberDiff: Int,
+    timeoutPolicy: ConsensusService.TimeoutPolicy
 )(implicit tracers: ConsensusTracers[F, A], storeRunner: KVStoreRunner[F, N]) {
 
   import ConsensusService.MessageCounter
@@ -238,14 +240,20 @@ class ConsensusService[F[
         val handle: F[Unit] = event match {
           case e @ Event.NextView(viewNumber)
               if viewNumber < state.viewNumber =>
-            ().pure[F]
+            // Every time we don't time out, we can decrese the timeout a little bit.
+            stateRef.set(
+              state.copy(timeout = timeoutPolicy.decrease(state.timeout))
+            )
 
           case e @ Event.NextView(viewNumber) =>
             for {
               counter <- counterRef.get
               _       <- tracers.timeout(viewNumber -> counter)
               _       <- maybeRequestStatusSync(viewNumber, counter)
-              _       <- handleTransition(state.handleNextView(e))
+              adjusted = state.copy(timeout =
+                timeoutPolicy.increase(state.timeout)
+              )
+              _ <- handleTransition(adjusted.handleNextView(e))
             } yield ()
 
           case e @ Event.MessageReceived(_, _) =>
@@ -432,7 +440,8 @@ class ConsensusService[F[
     val process = effect match {
       case ScheduleNextView(viewNumber, timeout) =>
         val event = validated(NextView(viewNumber))
-        Timer[F].sleep(timeout) >> enqueueEvent(event)
+        Timer[F].sleep(timeout) >>
+          enqueueEvent(event)
 
       case CreateBlock(viewNumber, highQC) =>
         // Ask the application to create a block for us.
@@ -534,6 +543,38 @@ object ConsensusService {
     val empty = MessageCounter(0, 0, 0)
   }
 
+  trait TimeoutPolicy {
+    def increase(timeout: FiniteDuration): FiniteDuration
+    def decrease(timeout: FiniteDuration): FiniteDuration
+  }
+  object TimeoutPolicy {
+    val const = new TimeoutPolicy {
+      override def increase(timeout: FiniteDuration) = timeout
+      override def decrease(timeout: FiniteDuration) = timeout
+    }
+
+    def exponential(
+        factor: Double,
+        minTimeout: FiniteDuration,
+        maxTimeout: FiniteDuration
+    ) = new TimeoutPolicy {
+      import scala.concurrent.duration._
+
+      require(factor > 1.0)
+
+      override def increase(timeout: FiniteDuration) =
+        (timeout * factor).min(maxTimeout).toMillis.millis
+
+      override def decrease(timeout: FiniteDuration) =
+        (timeout / factor).max(minTimeout).toMillis.millis
+    }
+  }
+
+  case class Config(
+      timeoutPolicy: TimeoutPolicy,
+      maxEarlyViewNumberDiff: Int = 1
+  )
+
   /** Create a `ConsensusService` instance and start processing events
     * in the background, shutting processing down when the resource is
     * released.
@@ -551,7 +592,7 @@ object ConsensusService {
       viewStateStorage: ViewStateStorage[N, A],
       syncPipe: SyncPipe[F, A]#Left,
       initState: ProtocolState[A],
-      maxEarlyViewNumberDiff: Int = 1
+      config: Config
   )(implicit
       tracers: ConsensusTracers[F, A],
       storeRunner: KVStoreRunner[F, N]
@@ -575,8 +616,8 @@ object ConsensusService {
           viewStateStorage,
           syncPipe,
           initState,
-          maxEarlyViewNumberDiff,
-          fiberSet
+          fiberSet,
+          config
         )
       )
 
@@ -599,8 +640,8 @@ object ConsensusService {
       viewStateStorage: ViewStateStorage[N, A],
       syncPipe: SyncPipe[F, A]#Left,
       initState: ProtocolState[A],
-      maxEarlyViewNumberDiff: Int,
-      fiberSet: FiberSet[F]
+      fiberSet: FiberSet[F],
+      config: Config
   )(implicit
       tracers: ConsensusTracers[F, A],
       storeRunner: KVStoreRunner[F, N]
@@ -625,7 +666,8 @@ object ConsensusService {
         syncPipe,
         eventQueue,
         fiberSet,
-        maxEarlyViewNumberDiff
+        config.maxEarlyViewNumberDiff,
+        config.timeoutPolicy
       )
     } yield service
 }
