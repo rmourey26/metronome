@@ -159,6 +159,12 @@ class ConnectionHandler[F[_]: Concurrent, K, M](
     }
   }
 
+  def receiveMessage(
+      sender: K,
+      message: M
+  ): F[Unit] =
+    messageQueue.offer(MessageReceived(sender, message))
+
   private def handleConflict(
       newConnectionWithPossibleConflict: ConnectionWithConflictFlag[F, K, M]
   ): F[Option[HandledConnection[F, K, M]]] = {
@@ -283,9 +289,7 @@ class ConnectionHandler[F[_]: Concurrent, K, M](
             .map(_.get)
             .mapEval[Unit] { m =>
               tracers.received((connection, m)) >>
-                messageQueue.offer(
-                  MessageReceived(connection.key, m)
-                )
+                receiveMessage(connection.key, m)
             }
             .guarantee(
               handleConnectionFinish(connection)
